@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ride Matching – IIT Patna / Bihta</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+body{margin:0;background:#0b1020;color:#e6eaf2;font:14px/1.45 system-ui,Segoe UI,sans-serif;padding:16px}
+.card{background:#111830;border:1px solid #232d4d;border-radius:12px;padding:14px;margin-bottom:14px}
+h1{font-size:20px;margin:0 0 10px}h2{font-size:13px;letter-spacing:.05em;text-transform:uppercase;margin:0 0 10px;color:#9fb0d0}
+#params{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+label{font-size:12px;color:#9fb0d0;display:flex;flex-direction:column;gap:3px}
+input{background:#0b1020;color:#e6eaf2;border:1px solid #2b3760;border-radius:6px;padding:5px 7px;width:100%;box-sizing:border-box}
+button,.btn{background:#1d2a52;color:#e6eaf2;border:1px solid #33437a;border-radius:8px;padding:8px 14px;cursor:pointer;font:inherit}
+button.p{background:#0f766e;border-color:#14b8a6}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+table{border-collapse:collapse;width:100%}th,td{padding:8px;text-align:left;border-bottom:1px solid #232d4d;white-space:nowrap}
+tr.sel{background:#10332f;box-shadow:inset 3px 0 #14b8a6}tr[data-k]{cursor:pointer}td.b{color:#34d399;font-weight:700}
+.g{display:grid;grid-template-columns:2fr 1fr;gap:14px}@media(max-width:900px){.g{grid-template-columns:1fr}}
+#map{height:620px;border-radius:10px}
+.kp{display:grid;grid-template-columns:1fr 1fr;gap:8px}.kp div{background:#080c18;border:1px solid #232d4d;border-radius:8px;padding:10px}.kp small{color:#9fb0d0}.kp b{font-size:20px;display:block}
+.ic{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;font-size:14px}
+.lt{background:#fffe;color:#111;border:0;padding:1px 5px;font-size:11px}
+.leaflet-popup-content input{background:#fff;color:#111;border:1px solid #aaa;width:70px}
+.leaflet-popup-content{color:#111;font-size:13px}
+h2 .n{display:inline-flex;width:22px;height:22px;border-radius:50%;background:#0f766e;color:#fff;align-items:center;justify-content:center;font-size:12px;margin-right:8px;letter-spacing:0}
+.algs{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.algs button{text-align:left;padding:12px 14px;line-height:1.35}.algs button small{display:block;color:#9fb0d0;margin-top:2px}
+.algs button.on{background:#10332f;border-color:#14b8a6}.algs button:disabled{opacity:.4;cursor:not-allowed}
+.hide{display:none}
+#chk{font-size:13px;margin-top:8px}.ok{color:#34d399}.no{color:#f87171}
+</style></head><body>
+<h1>Multi-Objective Ride Matching – Bihta / IIT Patna</h1>
+
+<div class="card"><h2><span class="n">1</span>Generate riders &amp; drivers</h2><div id="params"></div>
+<div class="row">
+ <button class="p" onclick="gen()">Generate on map</button>
+ <button onclick="live()">📍 Use my live location</button>
+ <button onclick="dl()">Download dataset</button>
+ <label class="btn" style="flex-direction:row">Upload dataset (.json)<input id="up" type="file" accept=".json" hidden></label>
+</div>
+<div id="cnt" style="font-size:12px;color:#9fb0d0;margin-top:8px"></div>
+<div class="tag" style="font-size:12px;color:#9fb0d0;margin-top:4px">Tip: drag any marker to move it, click a marker to edit its distances / availability.</div></div>
+
+<div class="card"><h2><span class="n">2</span>Choose an algorithm to match riders with drivers</h2>
+<div class="algs" id="algs"></div></div>
+
+<div class="card hide" id="rescard"><h2>Algorithm comparison (click a row to show it on the map)</h2><table id="res"></table><div id="chk"></div></div>
+
+<div class="g">
+ <div class="card"><h2 id="mt">Active map routing</h2><div id="map"></div></div>
+ <div>
+  <div class="card hide" id="kpcard"><h2>Selected algorithm telemetry</h2><div class="kp" id="kp"></div></div>
+  <div class="card"><h2>Distance → fare (₹)</h2><table id="ft"></table></div>
+  <div class="card"><h2>Matches → platform fee / match (₹)</h2><table id="mtb"></table></div>
+ </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const FARE=[[0,2,40],[2,5,90],[5,10,180],[10,15,270],[15,99,380]];
+const MT=[[1,10,20],[11,25,25],[26,50,30],[51,9999,35]];
+const SPEED=25,BIG=1e5,NM=['Amit','Priya','Rahul','Sneha','Vivek','Anjali','Rohit','Neha','Karan','Pooja','Ravi','Sita'];
+const DESC={A:'Pairs riders with drivers in arrival order',B:'Each rider takes the closest free driver',C:'Hungarian assignment: wait, driver revenue &amp; GMV'};
+const ALG={A:'Random / FIFO baseline',B:'Greedy nearest-neighbour',C:'⭐ Our multi-objective optimization'};
+let C=[25.5355,84.852],DS,RES=null,cur=null;
+const $=id=>document.getElementById(id),v=id=>+$(id).value;
+const hav=(a,b)=>{const r=Math.PI/180,x=Math.sin((b.lat-a.lat)*r/2)**2+Math.cos(a.lat*r)*Math.cos(b.lat*r)*Math.sin((b.lng-a.lng)*r/2)**2;return 12742*Math.asin(Math.sqrt(x))};
+const fare=d=>FARE.find(b=>d>=b[0]&&d<b[1])[2];
+const rate=n=>n?MT.find(b=>n>=b[0]&&n<=b[1])[2]:0;
+
+const P=[['clat','Centre lat',C[0]],['clng','Centre lng',C[1]],['rad','Area radius km',3],['seed','Seed',7],
+['nR','No. of riders',25],['nD','No. of drivers',20],['aR','Riders active %',100],['aD','Drivers available %',100],
+['tLo','Rider trip km (min)',1],['tHi','Rider trip km (max)',12],['mnLo','Driver MIN km from',1],['mnHi','Driver MIN km to',5],
+['mxLo','Driver MAX km from',6],['mxHi','Driver MAX km to',15],['w1','Wait weight',1.5],['w2','Driver rev weight',1],['w3','GMV weight',1],['mp','Max pickup km',8]];
+const SHOW=['nR','nD','aR','aD']; // only these are editable in the UI; the rest keep their defaults as hidden inputs
+$('params').innerHTML=P.map(([i,l,x])=>SHOW.includes(i)?`<label>${l}<input id="${i}" type="number" step="any" value="${x}"></label>`:`<input id="${i}" type="hidden" value="${x}">`).join('');
+
+// ---------- map ----------
+const map=L.map('map').setView(C,14);
+const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri'}).addTo(map);
+const st=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'});
+L.control.layers({'Satellite':sat,'Street':st}).addTo(map);
+const lay=L.layerGroup().addTo(map);
+
+// ---------- data ----------
+const API = (location.hostname === 'localhost' || location.port === '5000') ? '' : 'https://your-render-app-name.onrender.com';
+const pv=()=>Object.fromEntries(P.map(([i])=>[i,v(i)]));
+async function api(path,body){const r=await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!r.ok)throw new Error(await r.text());return r.json()}
+function backendErr(e){$('chk').innerHTML=`<span class="no">✘ Backend error: ${String(e.message||e).slice(0,200)} — start it with <code>cd backend; python server.py</code> and open http://localhost:5000</span>`}
+async function gen(){try{DS=await api('/api/generate',pv());C=DS.center;map.setView(C,14);fresh()}catch(e){backendErr(e)}}
+// new data -> back to step 1 state (points only, nothing matched yet)
+function fresh(){RES=null;cur=null;seq++;$('chk').innerHTML='';ui();draw(null)}
+function ui(){const has=!!DS;$('algs').innerHTML=Object.keys(ALG).map(a=>`<button data-a="${a}" ${has?'':'disabled'} class="${a==cur?'on':''}" onclick="pick('${a}')">${ALG[a]}<small>${DESC[a]}</small></button>`).join('');
+ $('rescard').classList.toggle('hide',!RES);$('kpcard').classList.toggle('hide',!RES);
+ if(has)$('cnt').textContent=`${DS.riders.length} riders (${DS.riders.filter(r=>r.on).length} active) · ${DS.drivers.length} drivers (${DS.drivers.filter(d=>d.on).length} available)`;
+ $('mt').textContent=RES&&cur?'Active map routing – '+ALG[cur]:'Map – generated riders & drivers (pick an algorithm in step 2)'}
+async function pick(a){if(!DS)return;cur=a;if(RES){render()}else await runAll()}
+// after a drag / edit: re-run only if an algorithm has already been applied
+function refresh(){if(RES)runAll();else{ui();draw(null)}}
+function live(){navigator.geolocation?navigator.geolocation.getCurrentPosition(p=>{$('clat').value=p.coords.latitude;$('clng').value=p.coords.longitude;gen()},()=>alert('Location blocked. Open via http://localhost (python -m http.server) or type the centre lat/lng.')):alert('No geolocation')}
+function dl(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(DS,null,1)],{type:'application/json'}));a.download='dataset.json';a.click()}
+$('up').onchange=e=>e.target.files[0].text().then(t=>{try{DS=JSON.parse(t);C=DS.center||C;map.setView(C,14);fresh()}catch(_){alert('Bad JSON')}});
+
+// ---------- algorithms run on the Flask backend (backend/server.py) ----------
+let seq=0;
+async function runAll(){const n=++seq;try{const o=await api('/api/simulate',{dataset:DS,params:pv()});if(n!==seq)return;RES={A:o.A,B:o.B,C:o.C};cur=cur||'C';
+ $('chk').innerHTML=o.check.bad?`<span class="no">✘ ${o.check.bad} improving moves found (of ${o.check.n})</span>`:`<span class="ok">✔ Optimality check passed: 0 improving swaps / replacements / extra matches among ${o.check.n} tested alternatives (computed by backend). Run app.py for brute-force proof.</span>`;render()}catch(e){backendErr(e)}}
+
+// ---------- render ----------
+function render(){
+ const rows=[['n','Rides',1,0],['gmv','GMV ₹',1,0,'₹'],['platform','Platform rev ₹',1,0,'₹'],['avgDrv','Avg driver rev ₹',1,2,'₹'],['avgPk','Avg pickup km',0,2],['avgWait','Avg wait min',0,2],['rejN','Rejected by drivers',0,0]];
+ const best=rows.map(([k,,hi])=>{const x=['A','B','C'].map(a=>RES[a][k]);return hi?Math.max(...x):Math.min(...x)});
+ $('res').innerHTML='<tr><th>Algorithm</th>'+rows.map(r=>`<th>${r[1]}</th>`).join('')+'</tr>'+Object.keys(ALG).map(a=>`<tr data-k="${a}" class="${a==cur?'sel':''}"><td>${ALG[a]}</td>`+rows.map(([k,,,d],ix)=>`<td class="${Math.abs(RES[a][k]-best[ix])<1e-9?'b':''}">${RES[a][k].toFixed(d)}</td>`).join('')+'</tr>').join('');
+ document.querySelectorAll('tr[data-k]').forEach(t=>t.onclick=()=>{cur=t.dataset.k;render()});
+ const R=RES[cur];ui();
+ $('kp').innerHTML=[['Total GMV','₹'+R.gmv],['Avg driver revenue','₹'+R.avgDrv.toFixed(1)],['Avg ETA (waiting)',R.avgWait.toFixed(2)+' min'],['Avg pickup distance',R.avgPk.toFixed(2)+' km']].map(x=>`<div><small>${x[0]}</small><b>${x[1]}</b></div>`).join('');
+ $('ft').innerHTML='<tr><th>Trip km</th><th>Fare</th></tr>'+FARE.map(b=>`<tr><td>${b[0]}–${b[1]>=99?'∞':b[1]}</td><td>₹${b[2]}</td></tr>`).join('');
+ $('mtb').innerHTML='<tr><th>Matches</th><th>Fee/match</th></tr>'+MT.map(b=>`<tr><td>${b[0]}–${b[1]>=9999?'∞':b[1]}</td><td>₹${b[2]}</td></tr>`).join('');
+ draw(R)}
+function ico(c,e,dim){return L.divIcon({className:'',html:`<div class="ic" style="background:${dim?'#64748b':c}">${e}</div>`,iconSize:[28,28],iconAnchor:[14,14]})}
+function draw(R){lay.clearLayers();const pairs=R?R.pairs:[],mr={},md={};pairs.forEach(([i,j])=>{mr[i]=j;md[j]=i});const rejS=new Set((R?R.rej:[]).map(q=>q[0]+'-'+q[1]));
+ pairs.forEach(([i,j])=>{const a=DS.riders[i],b=DS.drivers[j],bad=rejS.has(i+'-'+j),d=hav(a,b);
+  L.polyline([[b.lat,b.lng],[a.lat,a.lng]],{color:bad?'#ef4444':'#22c55e',dashArray:'6 6',weight:3}).bindTooltip(`⏱ ${(d/SPEED*60).toFixed(1)}m (${d.toFixed(2)} km)${bad?' ✘ rejected':''}`,{permanent:pairs.length<=30,className:'lt'}).addTo(lay)});
+ DS.drivers.forEach((d,j)=>{const m=L.marker([d.lat,d.lng],{icon:ico('#16a34a','🏍️',!d.on),draggable:true}).addTo(lay);
+  const rid=md[j],st=!d.on?'Unavailable':!R?'Available':rid===undefined?'Idle (unmatched)':rejS.has(rid+'-'+j)?'Rejected ride (trip outside range)':'Matched with '+DS.riders[rid].id;
+  m.bindPopup(`<b>🏍️ Driver ${d.name} (${d.id})</b><br>Status: ${st}<br>${R?'Revenue this run: ₹'+(R.earn[j]||0).toFixed(0)+'<br>':''}
+  Min trip km <input id="e1" type="number" step="any" value="${d.minD}"><br>Max trip km <input id="e2" type="number" step="any" value="${d.maxD}"><br>
+  Available <input id="e3" type="checkbox" ${d.on?'checked':''} style="width:auto"><br><button onclick="ed('drivers',${j})">Apply</button>`);
+  m.on('dragend',e=>{const p=e.target.getLatLng();d.lat=p.lat;d.lng=p.lng;refresh()})});
+ DS.riders.forEach((r,i)=>{const m=L.marker([r.lat,r.lng],{icon:ico('#ef4444','📍',!r.on),draggable:true}).addTo(lay);const j=mr[i];
+  const st=!r.on?'Inactive':!R?'Requesting a ride':j===undefined?'Unserved':rejS.has(i+'-'+j)?'Driver rejected (trip outside driver range)':`Matched with ${DS.drivers[j].name} (${DS.drivers[j].id}), wait ${(hav(r,DS.drivers[j])/SPEED*60).toFixed(1)} min`;
+  m.bindPopup(`<b>📍 Rider ${r.id}</b><br>Status: ${st}<br>Fare for trip: ₹${fare(r.dist)}<br>Trip distance km <input id="e1" type="number" step="any" value="${r.dist}"><br>
+  Requesting <input id="e3" type="checkbox" ${r.on?'checked':''} style="width:auto"><br><button onclick="ed('riders',${i})">Apply</button>`);
+  m.on('dragend',e=>{const p=e.target.getLatLng();r.lat=p.lat;r.lng=p.lng;refresh()})})}
+function ed(t,i){const o=DS[t][i];if(t=='drivers'){o.minD=+$('e1').value;o.maxD=+$('e2').value}else o.dist=+$('e1').value;o.on=$('e3').checked;map.closePopup();refresh()}
+gen();
+</script></body></html>
